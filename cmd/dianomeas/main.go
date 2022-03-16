@@ -23,16 +23,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	host, err := c.SetupDevice("eom")
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	log.Printf("New host: %s (%s)\n", host.Name(), host.IPv4())
-
-	time.Sleep(1 * time.Minute)
-
-	err = c.TeardownDevice(host.Name())
+	err = c.ListEvents()
 	if err != nil {
 		log.Fatal(err)
 	}

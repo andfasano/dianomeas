@@ -4,7 +4,11 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math"
 	"math/rand"
+	"regexp"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/andfasano/dianomeas/internal/pkg/hosts"
@@ -175,6 +179,141 @@ func (c *Client) TeardownDevice(hostname string) error {
 	if err != nil {
 		return err
 	}
+
+	return nil
+}
+
+func (c *Client) getDeviceId(e packngo.Event) string {
+	re := regexp.MustCompile("\\\"(.[^\\\"]*)\\\"")
+
+	deviceId := ""
+	match := re.FindStringSubmatch(e.Interpolated)
+	if match != nil {
+		deviceId = match[1]
+	}
+
+	return deviceId
+
+}
+
+func (c *Client) ListEvents() error {
+
+	maxPages := 30
+	lastNdays := 8
+	instanceCostPerHour := 2.0
+	leakHoursThreshold := 4.0
+
+	numCreations := make(map[string]int)
+	now := time.Now()
+	continueSearch := true
+
+	instancesCreatedAt := make(map[string]time.Time)
+	instancesDeletedAt := make(map[string]time.Time)
+
+	prevNumDays := -1
+
+	log.Printf("Fetching events for the last %d days\n", lastNdays)
+	for i := 1; continueSearch && i <= maxPages; i++ {
+
+		events, _, err := c.client.Projects.ListEvents(c.projectID, &packngo.GetOptions{
+			PerPage: 500,
+			Page:    i,
+		})
+		if err != nil {
+			return err
+		}
+
+		for _, event := range events {
+
+			t2 := now.Truncate(24 * time.Hour)
+			t1 := event.CreatedAt.Time.Truncate(24 * time.Hour)
+
+			numDays := int(t2.Sub(t1).Hours()) / 24
+			if numDays > lastNdays {
+				continueSearch = false
+				break
+			}
+
+			if numDays == 0 {
+				continue
+			}
+
+			if numDays != prevNumDays {
+				log.Printf("Scanning events for %s (T-%d)\n", event.CreatedAt.Format("2006-01-02"), numDays)
+				prevNumDays = numDays
+			}
+
+			deviceId := c.getDeviceId(event)
+			if !strings.HasPrefix(deviceId, "ipi") {
+				continue
+			}
+
+			switch event.Type {
+			case "instance.created":
+				instancesCreatedAt[deviceId] = event.CreatedAt.Time
+				key := fmt.Sprintf("%d-%02d-%02d", event.CreatedAt.Year(), event.CreatedAt.Month(), event.CreatedAt.Day())
+				numCreations[key]++
+			case "instance.deleted":
+				instancesDeletedAt[deviceId] = event.CreatedAt.Time
+			}
+		}
+	}
+	log.Println()
+
+	totalInstances := 0
+	var totalTime, maxTime time.Duration
+	var maxId string
+	numLeaks := 0
+	var totalCost, maxCost float64
+
+	// Instances per day / total
+	var keys []string
+	for k := range numCreations {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		log.Println(k, "num instances:", numCreations[k])
+		totalInstances += numCreations[k]
+	}
+	log.Println("Total instances:", totalInstances)
+	log.Println()
+
+	// Max and average usage
+	for deviceId, creationTime := range instancesCreatedAt {
+		if deletionTime, ok := instancesDeletedAt[deviceId]; ok {
+
+			curr := deletionTime.Sub(creationTime)
+			currCost := math.Ceil(curr.Hours()) * instanceCostPerHour
+
+			totalTime += curr
+			if curr >= maxTime {
+				maxTime = curr
+				maxId = deviceId
+				maxCost = currCost
+			}
+			totalCost += currCost
+			if currCost >= maxCost {
+				maxCost = currCost
+			}
+
+			if curr.Hours() > leakHoursThreshold {
+				numLeaks++
+			}
+
+		}
+	}
+
+	avgSecs := int(totalTime.Seconds()) / len(instancesCreatedAt)
+	avgTime := time.Duration(avgSecs) * time.Second
+	log.Printf("Average instance uptime: %s\n", avgTime)
+	log.Printf("Num leaks (uptime > 4h): %d\n", numLeaks)
+	log.Println()
+	log.Printf("Total uptime:            %s\n", totalTime)
+	log.Printf("Max instance uptime:     %s (%s)\n", maxTime, maxId)
+	log.Println()
+	log.Printf("Total cost:              $ %.f", totalCost)
+	log.Printf("Most expensive instance: %s (%s, $ %.f)", maxId, maxTime, maxCost)
 
 	return nil
 }
