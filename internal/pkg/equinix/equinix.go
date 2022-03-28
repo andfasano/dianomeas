@@ -196,23 +196,19 @@ func (c *Client) getDeviceId(e packngo.Event) string {
 
 }
 
-func (c *Client) ListEvents() error {
+func (c *Client) ListEvents(from, to time.Time) error {
 
 	maxPages := 30
-	lastNdays := 8
 	instanceCostPerHour := 2.0
 	leakHoursThreshold := 4.0
 
 	numCreations := make(map[string]int)
-	now := time.Now()
 	continueSearch := true
 
 	instancesCreatedAt := make(map[string]time.Time)
 	instancesDeletedAt := make(map[string]time.Time)
 
-	prevNumDays := -1
-
-	log.Printf("Fetching events for the last %d days\n", lastNdays)
+	var prev time.Time
 	for i := 1; continueSearch && i <= maxPages; i++ {
 
 		events, _, err := c.client.Projects.ListEvents(c.projectID, &packngo.GetOptions{
@@ -225,22 +221,19 @@ func (c *Client) ListEvents() error {
 
 		for _, event := range events {
 
-			t2 := now.Truncate(24 * time.Hour)
-			t1 := event.CreatedAt.Time.Truncate(24 * time.Hour)
-
-			numDays := int(t2.Sub(t1).Hours()) / 24
-			if numDays > lastNdays {
-				continueSearch = false
-				break
+			curr := event.CreatedAt.Time.Truncate(24 * time.Hour)
+			if prev != curr {
+				log.Printf("Fetching events for %s\n", curr.Format("2006-01-02"))
+				prev = curr
 			}
 
-			if numDays == 0 {
+			if curr.After(to) {
 				continue
 			}
 
-			if numDays != prevNumDays {
-				log.Printf("Scanning events for %s (T-%d)\n", event.CreatedAt.Format("2006-01-02"), numDays)
-				prevNumDays = numDays
+			if curr.Before(from) {
+				continueSearch = false
+				break
 			}
 
 			deviceId := c.getDeviceId(event)
