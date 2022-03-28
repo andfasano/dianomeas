@@ -23,7 +23,24 @@ func main() {
 		log.Fatal(err)
 	}
 
-	err = c.ListEvents()
+	from := time.Now().Truncate(24 * time.Hour)
+	to := from
+	if len(os.Args) == 3 {
+		from, err = time.Parse("2006-01-02", os.Args[1])
+		if err != nil {
+			log.Fatal(err)
+		}
+		to, err = time.Parse("2006-01-02", os.Args[2])
+		if err != nil {
+			log.Fatal(err)
+		}
+	}
+
+	if from.After(to) {
+		log.Fatal("Invalid date range")
+	}
+
+	err = c.ListEvents(from, to)
 	if err != nil {
 		log.Fatal(err)
 	}
